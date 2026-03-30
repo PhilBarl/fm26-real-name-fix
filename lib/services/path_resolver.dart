@@ -36,36 +36,46 @@ import '../models/app_state.dart';
 ///
 /// Returns null if the expected install location doesn't exist on this machine
 /// (meaning FM is not installed, or is installed somewhere non-standard).
+///
+/// Multiple candidate paths are tried because Steam/Epic use slightly different
+/// folder names across OS versions and FM releases (e.g. "Football Manager 26"
+/// vs "Football Manager 2026", "fm.app" vs "fm26.app").
 Future<ResolvedPaths?> resolveDbFolder(Store store) async {
-  // Step 1: get the OS-specific path to the `db/` directory for this store.
-  final String? rawDbPath = _getDbPath(store);
-  if (rawDbPath == null) {
+  // Step 1: get the list of candidate db/ paths for this OS + store.
+  // We try each one in order and use the first that actually exists.
+  final List<String>? candidates = _getDbPathCandidates(store);
+  if (candidates == null || candidates.isEmpty) {
     // This store isn't supported on the current OS (e.g. Game Pass on macOS).
     return null;
   }
 
-  // Step 2: expand the leading '~' to the real home directory path.
-  final String dbPath = _expandHome(rawDbPath);
+  for (final rawPath in candidates) {
+    // Step 2: expand the leading '~' to the real home directory path.
+    final String dbPath = _expandHome(rawPath);
 
-  // Step 3: confirm the db/ directory exists.
-  final Directory dbDir = Directory(dbPath);
-  if (!await dbDir.exists()) {
-    return null;
+    // Step 3: confirm this candidate db/ directory exists.
+    final Directory dbDir = Directory(dbPath);
+    if (!await dbDir.exists()) {
+      continue; // This candidate doesn't exist — try the next one.
+    }
+
+    // Step 4: scan db/ for version sub-folders (any sub-directory whose name
+    // is all digits, e.g. "2600", "2610", "2500").
+    final List<String> versionFolders = await _findVersionFolders(dbDir);
+
+    if (versionFolders.isEmpty) {
+      continue; // This db/ exists but has no version folders — try the next.
+    }
+
+    // Found a valid path with version folders — use it.
+    return ResolvedPaths(
+      dbFolderPath: dbPath,
+      versionFolders: versionFolders,
+    );
   }
 
-  // Step 4: scan db/ for version sub-folders (any sub-directory whose name
-  // is all digits, e.g. "2600", "2610", "2500").
-  final List<String> versionFolders = await _findVersionFolders(dbDir);
-
-  if (versionFolders.isEmpty) {
-    // The db/ directory exists but has no recognised version folders.
-    return null;
-  }
-
-  return ResolvedPaths(
-    dbFolderPath: dbPath,
-    versionFolders: versionFolders,
-  );
+  // None of the candidates matched.
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,82 +101,111 @@ class ResolvedPaths {
 // db/ path per OS + store
 // ---------------------------------------------------------------------------
 
-/// Returns the path to the `db/` directory (the parent of version folders)
-/// for the given store on the current OS.
+/// Returns a list of candidate `db/` directory paths to try for the given
+/// store on the current OS, ordered most-likely-first.
 ///
-/// Returns null if the combination is not supported.
-String? _getDbPath(Store store) {
-  if (Platform.isMacOS) return _macDbPath(store);
-  if (Platform.isWindows) return _windowsDbPath(store);
-  if (Platform.isLinux) return _linuxDbPath(store);
+/// We try multiple variants because:
+/// - Steam on macOS has used both "Football Manager 26" and "Football Manager 2026"
+///   as the steamapps folder name across different FM releases.
+/// - The main app bundle has been named "fm.app" in some installs and "fm26.app"
+///   (or similar) in others.
+/// - Epic store folder names also vary slightly.
+///
+/// Returns null if the combination is not supported on this OS at all
+/// (e.g. Game Pass on macOS).
+List<String>? _getDbPathCandidates(Store store) {
+  if (Platform.isMacOS) return _macDbPathCandidates(store);
+  if (Platform.isWindows) return _windowsDbPathCandidates(store);
+  if (Platform.isLinux) return _linuxDbPathCandidates(store);
   return null;
 }
 
-/// macOS db/ paths.
+/// macOS candidate db/ paths.
 ///
 /// On macOS, `fm.app` and `game_plugin.bundle` are "app bundles" — they look
-/// like single files in Finder but are really folders. We navigate inside them
-/// programmatically just like any other directory.
+/// like single files in Finder but are really folders. Dart's `dart:io` treats
+/// them as regular directories, so we can navigate inside them freely in code.
 ///
-/// We use "Football Manager 26" (with a space before 26) as that is the
-/// folder name Steam creates on macOS. Adjust if this changes with future
-/// FM releases or patches.
-String? _macDbPath(Store store) {
-  // The sub-path inside the app bundle that leads to db/
-  const String inner =
-      'fm.app/Contents/PlugIns/game_plugin.bundle/Contents/Resources/shared/data/database/db';
+/// We try:
+///   - "Football Manager 26"  (short form — the folder name seen in some installs)
+///   - "Football Manager 2026" (full year — seen in other installs)
+/// and both "fm.app" and "fm26.app" as the inner bundle name.
+List<String>? _macDbPathCandidates(Store store) {
+  // The inner path shared by all macOS variants, after the game root and app name.
+  const String afterBundle =
+      'Contents/PlugIns/game_plugin.bundle/Contents/Resources/shared/data/database/db';
+
+  // We build every combination of game folder name × app bundle name.
+  List<String> buildCandidates(String baseDir, List<String> appNames) {
+    return appNames.map((app) => p.join(baseDir, app, afterBundle)).toList();
+  }
 
   switch (store) {
     case Store.steam:
-      return p.join(
-        '~/Library/Application Support/Steam/steamapps/common/Football Manager 26',
-        inner,
-      );
+      // Steam installs under ~/Library/Application Support/Steam/steamapps/common/
+      // The exact folder name for FM26 has varied; try both.
+      const String steamBase =
+          '~/Library/Application Support/Steam/steamapps/common';
+      return [
+        ...buildCandidates('$steamBase/Football Manager 26',   ['fm.app', 'fm26.app']),
+        ...buildCandidates('$steamBase/Football Manager 2026', ['fm.app', 'fm26.app']),
+      ];
+
     case Store.epicGames:
-      return p.join(
-        '~/Library/Application Support/Epic/FootballManager2026',
-        inner,
-      );
+      // Epic on macOS uses a different base location.
+      const String epicBase =
+          '~/Library/Application Support/Epic';
+      return [
+        ...buildCandidates('$epicBase/FootballManager2026', ['fm.app', 'fm26.app']),
+        ...buildCandidates('$epicBase/FootballManager26',   ['fm.app', 'fm26.app']),
+      ];
+
     case Store.gamePass:
       return null; // Game Pass is Windows-only.
   }
 }
 
-/// Windows db/ paths.
+/// Windows candidate db/ paths.
 ///
-/// We default to `Program Files (x86)` which is the standard Steam/Epic
-/// install location on 64-bit Windows. The manual override in the UI handles
-/// non-standard drive letters or install locations.
-String? _windowsDbPath(Store store) {
+/// We default to `Program Files (x86)` (the standard Steam/Epic location on
+/// 64-bit Windows) but also try `Program Files` without `(x86)` for users on
+/// systems where Steam chose the non-x86 directory.
+List<String>? _windowsDbPathCandidates(Store store) {
   const String inner = r'shared\data\database\db';
 
   switch (store) {
     case Store.steam:
-      return p.join(
-        r'C:\Program Files (x86)\Steam\steamapps\common\Football Manager 2026',
-        inner,
-      );
+      return [
+        p.join(r'C:\Program Files (x86)\Steam\steamapps\common\Football Manager 2026', inner),
+        p.join(r'C:\Program Files\Steam\steamapps\common\Football Manager 2026', inner),
+        p.join(r'C:\Program Files (x86)\Steam\steamapps\common\Football Manager 26', inner),
+        p.join(r'C:\Program Files\Steam\steamapps\common\Football Manager 26', inner),
+      ];
     case Store.epicGames:
-      return p.join(
-        r'C:\Program Files (x86)\Epic Games\FootballManager26',
-        inner,
-      );
+      return [
+        p.join(r'C:\Program Files (x86)\Epic Games\FootballManager2026', inner),
+        p.join(r'C:\Program Files\Epic Games\FootballManager2026', inner),
+        p.join(r'C:\Program Files (x86)\Epic Games\FootballManager26', inner),
+        p.join(r'C:\Program Files\Epic Games\FootballManager26', inner),
+      ];
     case Store.gamePass:
-      return p.join(
-        r'C:\XboxGames\Football Manager 26',
-        inner,
-      );
+      return [
+        p.join(r'C:\XboxGames\Football Manager 26', inner),
+        p.join(r'C:\XboxGames\Football Manager 2026', inner),
+      ];
   }
 }
 
-/// Linux db/ paths.
-String? _linuxDbPath(Store store) {
+/// Linux candidate db/ paths.
+List<String>? _linuxDbPathCandidates(Store store) {
+  const String inner = 'shared/data/database/db';
+
   switch (store) {
     case Store.steam:
-      return p.join(
-        '~/.local/share/Steam/steamapps/common/Football Manager 2026',
-        'shared/data/database/db',
-      );
+      return [
+        p.join('~/.local/share/Steam/steamapps/common/Football Manager 2026', inner),
+        p.join('~/.local/share/Steam/steamapps/common/Football Manager 26', inner),
+      ];
     case Store.epicGames:
       // Epic on Linux is not officially supported by SI.
       return null;

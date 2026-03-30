@@ -64,12 +64,30 @@ class _FolderConfirmScreenState extends State<FolderConfirmScreen> {
   // True while a manual directory picker is open.
   bool _browsing = false;
 
+  // Controller for the "paste path" text field shown as an alternative to the
+  // folder picker on macOS (where the picker cannot navigate inside .app bundles).
+  final TextEditingController _pathController = TextEditingController();
+
+  // True while the manually-typed path is being validated.
+  bool _validatingPath = false;
+
+  // Error message to show under the text field, or null if no error.
+  String? _pathError;
+
   /// Called once when the widget is first inserted into the widget tree.
   /// 'initState' is the right place to kick off one-time async work.
   @override
   void initState() {
     super.initState();
     _autoDetect();
+  }
+
+  /// Called when this widget is removed from the tree permanently.
+  /// We must dispose the TextEditingController to free memory.
+  @override
+  void dispose() {
+    _pathController.dispose();
+    super.dispose();
   }
 
   // ---------------------------------------------------------------------------
@@ -100,6 +118,85 @@ class _FolderConfirmScreenState extends State<FolderConfirmScreen> {
         _status = _DetectionStatus.notFound;
       });
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Manual path text entry (macOS primary, all platforms secondary)
+  // ---------------------------------------------------------------------------
+
+  /// Validates the path typed by the user into the text field and, if valid,
+  /// populates AppState with the db/ folder and its version sub-folders.
+  ///
+  /// On macOS the folder picker cannot navigate inside .app bundles, so this
+  /// text field is the primary manual-override path. On other platforms it is
+  /// offered as an alternative to the folder picker.
+  Future<void> _submitManualPath() async {
+    final String raw = _pathController.text.trim();
+    if (raw.isEmpty) {
+      setState(() => _pathError = 'Please enter a path.');
+      return;
+    }
+
+    setState(() {
+      _validatingPath = true;
+      _pathError = null;
+    });
+
+    try {
+      // Expand ~ to the real home directory, just like the auto-detector does.
+      final String expanded = _expandHome(raw);
+      final Directory dir = Directory(expanded);
+
+      if (!await dir.exists()) {
+        setState(() => _pathError = 'Folder not found. Check the path and try again.');
+        return;
+      }
+
+      // Scan for version sub-folders.
+      final List<String> versionFolders = await _scanForVersionFolders(dir);
+
+      if (versionFolders.isNotEmpty) {
+        // The typed path is the db/ folder itself.
+        setState(() {
+          widget.appState.dbFolderPath = expanded;
+          widget.appState.dbFolderManuallySet = true;
+          widget.appState.availableVersionFolders = versionFolders;
+          widget.appState.selectAllVersionFolders();
+          _status = _DetectionStatus.found;
+          _pathError = null;
+        });
+      } else {
+        // Maybe the user typed a version folder directly (e.g. ending in /2600).
+        final String folderName = p.basename(expanded);
+        if (RegExp(r'^\d+$').hasMatch(folderName)) {
+          setState(() {
+            widget.appState.dbFolderPath = p.dirname(expanded);
+            widget.appState.dbFolderManuallySet = true;
+            widget.appState.availableVersionFolders = [expanded];
+            widget.appState.selectAllVersionFolders();
+            _status = _DetectionStatus.found;
+            _pathError = null;
+          });
+        } else {
+          setState(() => _pathError =
+              'No FM version folders (e.g. 2600) found in that directory. '
+              'Make sure the path points to the db/ folder.');
+        }
+      }
+    } finally {
+      setState(() => _validatingPath = false);
+    }
+  }
+
+  /// Expands a leading ~ to the real home directory.
+  /// Mirrors the private helper in path_resolver.dart so this screen can use
+  /// it without importing an internal function.
+  String _expandHome(String path) {
+    if (!path.startsWith('~')) return path;
+    final String? home =
+        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+    if (home == null) return path;
+    return p.join(home, path.substring(2));
   }
 
   // ---------------------------------------------------------------------------
@@ -406,48 +503,139 @@ class _FolderConfirmScreenState extends State<FolderConfirmScreen> {
   // ---------------------------------------------------------------------------
 
   Widget _buildNotFound(ColorScheme colorScheme, TextTheme textTheme) {
+    // On macOS the folder picker cannot navigate inside .app bundles, so the
+    // path text field is shown first. On other platforms the folder picker is
+    // shown first with the text field as a secondary option.
+    final bool isMacOS = Platform.isMacOS;
+
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const SizedBox(height: 8),
+          Icon(Icons.search_off, size: 56, color: colorScheme.onSurfaceVariant),
+          const SizedBox(height: 16),
+          Text(
+            'FM installation not found',
+            style: textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'The app could not find FM at the expected location for '
+            '${storeLabel(widget.appState.store!)}. '
+            'This can happen if FM is installed on a different drive or in a '
+            'custom location.',
+            style: textTheme.bodyMedium?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 24),
+
+          // On macOS, the primary option is pasting the path because the
+          // system folder picker cannot navigate inside .app bundles.
+          if (isMacOS) ...[
+            _buildPastePathSection(colorScheme, textTheme),
+            const SizedBox(height: 20),
+            const Divider(),
+            const SizedBox(height: 12),
+            Text(
+              'Or use the folder picker (note: you cannot navigate inside '
+              '.app bundles with the picker on macOS — use the path field above instead):',
+              style: textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+          ],
+
+          OutlinedButton.icon(
+            onPressed: _browsing ? null : _browseForFolder,
+            icon: _browsing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.drive_folder_upload),
+            label: const Text('Browse for FM folder…'),
+          ),
+
+          if (!isMacOS) ...[
+            const SizedBox(height: 20),
+            const Divider(),
+            const SizedBox(height: 12),
+            Text(
+              'Or paste the path to the db/ folder directly:',
+              style: textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 12),
+            _buildPastePathSection(colorScheme, textTheme),
+          ],
+
+          const SizedBox(height: 16),
+          TextButton(
+            onPressed: _autoDetect,
+            child: const Text('Try auto-detection again'),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  /// Builds the "paste a path" text field + submit button used for manual entry.
+  Widget _buildPastePathSection(ColorScheme colorScheme, TextTheme textTheme) {
     return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Icon(Icons.search_off, size: 56, color: colorScheme.onSurfaceVariant),
-        const SizedBox(height: 16),
         Text(
-          'FM installation not found',
-          style: textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
-          textAlign: TextAlign.center,
+          'Paste the path to the db/ folder:',
+          style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 4),
+        // Show the expected path as a hint so the user knows what to look for.
+        Text(
+          Platform.isMacOS
+              ? 'e.g. ~/Library/Application Support/Steam/steamapps/common/'
+                'Football Manager 26/fm.app/Contents/PlugIns/'
+                'game_plugin.bundle/Contents/Resources/shared/data/database/db'
+              : Platform.isWindows
+                  ? r'e.g. C:\Program Files (x86)\Steam\steamapps\common\'
+                    r'Football Manager 2026\shared\data\database\db'
+                  : 'e.g. ~/.local/share/Steam/steamapps/common/'
+                    'Football Manager 2026/shared/data/database/db',
+          style: textTheme.bodySmall?.copyWith(
+            color: colorScheme.onSurfaceVariant,
+            fontFamily: 'monospace',
+          ),
         ),
         const SizedBox(height: 8),
-        Text(
-          'The app could not find FM at the expected location for '
-          '${storeLabel(widget.appState.store!)}.\n\n'
-          'This can happen if FM is installed on a different drive or in a '
-          'custom location. Use the button below to navigate to the db/ folder '
-          'inside your FM installation manually.',
-          style: textTheme.bodyMedium?.copyWith(
-            color: colorScheme.onSurfaceVariant,
+        TextField(
+          controller: _pathController,
+          decoration: InputDecoration(
+            hintText: 'Paste or type the path here…',
+            errorText: _pathError,
+            border: const OutlineInputBorder(),
+            isDense: true,
           ),
-          textAlign: TextAlign.center,
+          // Allow submitting with Enter key.
+          onSubmitted: (_) => _submitManualPath(),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 8),
         FilledButton.icon(
-          onPressed: _browsing ? null : _browseForFolder,
-          icon: _browsing
+          onPressed: _validatingPath ? null : _submitManualPath,
+          icon: _validatingPath
               ? const SizedBox(
                   width: 18,
                   height: 18,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Icon(Icons.drive_folder_upload),
-          label: const Text('Browse for FM folder…'),
+              : const Icon(Icons.check),
+          label: const Text('Use this path'),
           style: FilledButton.styleFrom(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
           ),
-        ),
-        const SizedBox(height: 16),
-        TextButton(
-          onPressed: _autoDetect,
-          child: const Text('Try auto-detection again'),
         ),
       ],
     );

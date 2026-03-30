@@ -11,10 +11,10 @@
 import 'dart:io';
 
 // ---------------------------------------------------------------------------
-// Store — which game store the user has FM installed through
+// Store — which game store the user has FM26 installed through
 // ---------------------------------------------------------------------------
 
-/// Represents the three stores FM can be purchased from.
+/// Represents the three stores FM26 can be purchased from.
 /// Each store installs the game to a different folder path.
 enum Store {
   steam,
@@ -52,25 +52,23 @@ List<Store> availableStores() {
 /// Holds all the information collected during the install wizard.
 ///
 /// This is a plain Dart class (not a Flutter widget). It stores:
-/// - The fix folder path the user selected (the downloaded folder from Sortitoutsi)
+/// - The zip file path the user selected
 /// - Which store they chose
-/// - The FM database folder path (auto-detected or manually chosen)
-/// - All version sub-folders found (e.g. 2500, 2600, 2610 …)
-/// - Which version folders the user has checked for the fix to be applied to
+/// - The FM26 database folder path (auto-detected or manually chosen)
 ///
 /// The root widget (in main.dart) owns an instance of this and passes it
 /// down to each screen as a constructor argument.
 class AppState {
   // The path to the fix folder the user downloaded from Sortitoutsi.
-  // This is a folder (not a zip) containing dbc/, edt/, and Inc/ sub-folders.
+  // This folder should contain dbc/, edt/, and Inc/ sub-folders.
   // Null until the user has picked a folder.
   String? fixFolderPath;
 
-  // Which game store FM is installed through.
+  // Which game store FM26 is installed through.
   // Null until the user has made a selection.
   Store? store;
 
-  // The full path to the FM database folder that contains the version
+  // The full path to the FM26 database folder that contains the version
   // sub-folders (i.e. the `db/` directory).
   // This is either auto-detected from the OS/store or manually set by the user.
   // Null until detection or manual selection has occurred.
@@ -120,3 +118,4 @@ class AppState {
       availableVersionFolders.isNotEmpty &&
       selectedVersionFolders.length == availableVersionFolders.length;
 }
+  
