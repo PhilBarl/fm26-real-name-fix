@@ -153,6 +153,9 @@ class _FolderConfirmScreenState extends State<FolderConfirmScreen> {
       }
 
       // Scan for version sub-folders.
+      // This can throw a FileSystemException on macOS if the app cannot read
+      // the directory contents (e.g. a permission error). We catch that below
+      // and show a helpful message rather than failing silently.
       final List<String> versionFolders = await _scanForVersionFolders(dir);
 
       if (versionFolders.isNotEmpty) {
@@ -183,6 +186,15 @@ class _FolderConfirmScreenState extends State<FolderConfirmScreen> {
               'Make sure the path points to the db/ folder.');
         }
       }
+    } on FileSystemException catch (e) {
+      // The OS rejected the directory read (e.g. permissions). Show the error
+      // clearly so the user is not left with a silently disabled Next button.
+      setState(() => _pathError =
+          'Could not read that folder (${e.osError?.message ?? e.message}). '
+          'Check the path is correct and the app has permission to access it.');
+    } catch (e) {
+      // Catch-all for any other unexpected error during validation.
+      setState(() => _pathError = 'Unexpected error: $e');
     } finally {
       setState(() => _validatingPath = false);
     }
