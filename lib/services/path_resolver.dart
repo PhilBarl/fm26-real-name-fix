@@ -261,6 +261,54 @@ Future<List<String>> _findVersionFolders(Directory dbDir) async {
 }
 
 // ---------------------------------------------------------------------------
+// Editor data folder
+// ---------------------------------------------------------------------------
+
+/// Returns the standard FM26 "editor data" folder path for the current OS.
+///
+/// This is where .fmf files (editor data files such as the Real Name Fix
+/// graphics and name files) must be placed for FM to load them at startup.
+///
+/// Unlike the database db/ path, this path is the same regardless of which
+/// store FM was purchased from — it always lives in the user's personal
+/// data area (Documents on Windows, Application Support on macOS/Linux).
+///
+/// Note: this function returns the expected path whether or not the folder
+/// currently exists. The installer will create it if needed.
+///
+/// Returns null if the home directory cannot be determined.
+String? resolveEditorDataFolder() {
+  if (Platform.isMacOS) {
+    // macOS stores per-user FM data inside ~/Library/Application Support/,
+    // not inside the game bundle. This folder is the same for Steam and Epic.
+    return _expandHome(
+      '~/Library/Application Support/Sports Interactive/Football Manager 26/editor data',
+    );
+  }
+
+  if (Platform.isWindows) {
+    // Windows: %USERPROFILE%\Documents\Sports Interactive\Football Manager 26\editor data
+    // USERPROFILE is the standard Windows variable for the current user's home folder
+    // (e.g. C:\Users\Phil). We fall back to HOME for unusual setups.
+    final String? home =
+        Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'];
+    if (home == null) return null;
+    return p.join(
+      home, 'Documents', 'Sports Interactive', 'Football Manager 26', 'editor data',
+    );
+  }
+
+  if (Platform.isLinux) {
+    // Linux follows the XDG convention; FM typically uses ~/Documents.
+    return _expandHome(
+      '~/Documents/Sports Interactive/Football Manager 26/editor data',
+    );
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Home directory expansion
 // ---------------------------------------------------------------------------
 

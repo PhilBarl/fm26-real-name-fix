@@ -50,6 +50,7 @@ class _PreflightScreenState extends State<PreflightScreen> {
     final PreflightInfo? info = await buildPreflightInfo(
       fixFolderPath: widget.appState.fixFolderPath!,
       targetFolders: widget.appState.selectedVersionFolders.toList(),
+      editorDataFolderPath: widget.appState.editorDataFolderPath,
     );
 
     setState(() {
@@ -195,6 +196,50 @@ class _PreflightScreenState extends State<PreflightScreen> {
           ),
           const SizedBox(height: 12),
 
+          // --- Editor data .fmf files ---
+          // Only show this section if there are .fmf files to copy.
+          if (info.fmfFilesToCopy.isNotEmpty) ...[
+            _SectionCard(
+              icon: Icons.sports_soccer,
+              title: 'Editor data files (.fmf) to be copied',
+              color: colorScheme.secondaryContainer,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Show the destination path (or a note if it will be created).
+                  if (info.editorDataFolderPath != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            info.editorDataFolderExists
+                                ? 'Destination folder:'
+                                : 'Destination folder (will be created):',
+                            style: textTheme.bodySmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            info.editorDataFolderPath!,
+                            style: textTheme.bodySmall?.copyWith(
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  // List each .fmf file.
+                  ...info.fmfFilesToCopy.map((f) => _fileRow(context, f,
+                      Icons.add_circle_outline, colorScheme.secondary)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+
           // --- What will be deleted per version folder ---
           ...info.targetFolders.map((versionFolder) {
             final String versionName = p.basename(versionFolder);
@@ -274,6 +319,31 @@ class _PreflightScreenState extends State<PreflightScreen> {
                 .textTheme
                 .bodyMedium
                 ?.copyWith(fontFamily: 'monospace'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// A single row showing a filename (without a trailing slash) with an icon
+  /// and colour. Used for .fmf editor data files.
+  Widget _fileRow(
+      BuildContext context, String name, IconData icon, Color color) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3.0),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              name,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(fontFamily: 'monospace'),
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
         ],
       ),

@@ -65,11 +65,27 @@ class PreflightInfo {
   /// Which fix folders were found inside the source fix folder and will be copied in.
   final List<String> foldersInSource;
 
+  /// The path to the FM26 "editor data" folder where .fmf files will be copied.
+  /// Null if no editor data folder path is available (the .fmf step will be skipped).
+  final String? editorDataFolderPath;
+
+  /// Whether [editorDataFolderPath] already exists on disk.
+  /// If false, the apply step will create it automatically.
+  final bool editorDataFolderExists;
+
+  /// The .fmf filenames found in the EDITOR DATA sub-folder of the fix folder.
+  /// These files will be copied into [editorDataFolderPath].
+  /// Empty if no EDITOR DATA folder or .fmf files were found.
+  final List<String> fmfFilesToCopy;
+
   const PreflightInfo({
     required this.fixFolderPath,
     required this.targetFolders,
     required this.foldersToDelete,
     required this.foldersInSource,
+    required this.editorDataFolderPath,
+    required this.editorDataFolderExists,
+    required this.fmfFilesToCopy,
   });
 }
 
@@ -80,12 +96,15 @@ class PreflightInfo {
 /// [targetFolders] — all version folder paths the user has selected.
 ///   This list may contain multiple entries (e.g. 2500, 2600, 2610) when the
 ///   user wants to patch several FM versions at once.
+/// [editorDataFolderPath] — the path where .fmf files will be copied, or null
+///   to skip that step.
 ///
 /// Returns null if the fix folder cannot be read or contains none of the
 /// expected sub-folders (dbc, edt, Inc).
 Future<PreflightInfo?> buildPreflightInfo({
   required String fixFolderPath,
   required List<String> targetFolders,
+  String? editorDataFolderPath,
 }) async {
   // Check which fix folders currently exist in each selected version folder.
   // We report this per-folder so the pre-flight screen can show exactly what
@@ -110,11 +129,29 @@ Future<PreflightInfo?> buildPreflightInfo({
   // wrong folder — return null to signal an error.
   if (foldersInSource.isEmpty) return null;
 
+  // Resolve the actual root folder (accounting for a possible wrapper sub-folder)
+  // so we can look for the EDITOR DATA folder at the same level as dbc/edt/Inc.
+  final String sourcePrefix = await _findSourcePrefix(fixFolderPath);
+  final String sourceRoot = sourcePrefix.isEmpty
+      ? fixFolderPath
+      : p.join(fixFolderPath, sourcePrefix);
+
+  // Scan the EDITOR DATA sub-folder (if present) for .fmf files to copy.
+  final List<String> fmfFiles = await _detectFmfFiles(sourceRoot);
+
+  // Check whether the editor data folder already exists on disk.
+  // If it doesn't, the apply step will create it automatically.
+  final bool editorDataExists = editorDataFolderPath != null &&
+      await Directory(editorDataFolderPath).exists();
+
   return PreflightInfo(
     fixFolderPath: fixFolderPath,
     targetFolders: targetFolders,
     foldersToDelete: foldersToDelete,
     foldersInSource: foldersInSource,
+    editorDataFolderPath: editorDataFolderPath,
+    editorDataFolderExists: editorDataExists,
+    fmfFilesToCopy: fmfFiles,
   );
 }
 
@@ -122,22 +159,29 @@ Future<PreflightInfo?> buildPreflightInfo({
 // Main fix operation
 // ---------------------------------------------------------------------------
 
-/// Applies the Real Name Fix to every folder in [targetFolders].
+/// Applies the Real Name Fix to every folder in [targetFolders], and also
+/// copies any .fmf editor data files into [editorDataFolderPath] if provided.
 ///
 /// For each version folder (e.g. 2500, 2600, 2610 …) the steps are:
 ///   1. Delete the existing dbc/, edt/, Inc/ sub-folders (if present).
 ///   2. Copy dbc/, edt/, Inc/ from [fixFolderPath] into that version folder.
 ///
+/// If [editorDataFolderPath] is provided and the fix folder contains an
+/// EDITOR DATA sub-folder with .fmf files, those files are also copied there.
+/// The editor data folder is created automatically if it does not yet exist.
+///
 /// [fixFolderPath] — path to the downloaded fix folder.
 /// [targetFolders] — version folder paths selected by the user (may be many).
 /// [onProgress] — callback called with a [FixProgress] message for each step.
 ///   The apply screen passes this to a live log widget.
+/// [editorDataFolderPath] — optional path to the FM26 editor data folder.
 ///
 /// Returns a [FixResult] indicating overall success or the first error.
 Future<FixResult> applyFix({
   required String fixFolderPath,
   required List<String> targetFolders,
   required void Function(FixProgress) onProgress,
+  String? editorDataFolderPath,
 }) async {
   onProgress(const FixProgress('Checking source fix folder…'));
 
@@ -218,6 +262,60 @@ Future<FixResult> applyFix({
     }
 
     onProgress(FixProgress('  ✓ Done with $versionName.'));
+  }
+
+  // --- Copy .fmf editor data files (if applicable) ---
+  if (editorDataFolderPath != null) {
+    // Look for an EDITOR DATA sub-folder at the same level as dbc/edt/Inc.
+    final List<String> fmfFiles = await _detectFmfFiles(sourceRoot);
+
+    if (fmfFiles.isNotEmpty) {
+      onProgress(const FixProgress('── Copying editor data files ──'));
+
+      // Create the editor data folder if it doesn't already exist.
+      // FM will not create this folder automatically on a fresh install.
+      final Directory editorDataDir = Directory(editorDataFolderPath);
+      if (!await editorDataDir.exists()) {
+        onProgress(FixProgress(
+            '  Creating folder: $editorDataFolderPath'));
+        try {
+          // recursive: true creates parent folders as needed.
+          await editorDataDir.create(recursive: true);
+        } catch (e) {
+          return FixResult(
+            success: false,
+            message: 'Could not create the editor data folder:\n'
+                '$editorDataFolderPath\n\nDetails: $e',
+          );
+        }
+      }
+
+      // Find the EDITOR DATA sub-folder inside sourceRoot to copy from.
+      final Directory? editorDataSource =
+          await _findEditorDataSubDir(sourceRoot);
+      if (editorDataSource != null) {
+        for (final String fileName in fmfFiles) {
+          final File sourceFile =
+              File(p.join(editorDataSource.path, fileName));
+          final File destFile =
+              File(p.join(editorDataFolderPath, fileName));
+          onProgress(FixProgress('  Copying: $fileName'));
+          try {
+            await sourceFile.copy(destFile.path);
+          } catch (e) {
+            return FixResult(
+              success: false,
+              message: 'Failed to copy $fileName to the editor data folder.'
+                  '\n\nDetails: $e',
+            );
+          }
+        }
+        onProgress(const FixProgress('  ✓ Editor data files copied.'));
+      }
+    } else {
+      onProgress(const FixProgress(
+          'No EDITOR DATA folder found in the fix — skipping.'));
+    }
   }
 
   return const FixResult(
@@ -328,6 +426,60 @@ Future<String> _findSourcePrefix(String fixFolderPath) async {
   }
 
   return ''; // Could not determine a wrapper; try the top level anyway.
+}
+
+/// Looks for a sub-folder named "EDITOR DATA" (case-insensitive) directly
+/// inside [sourceRoot] and returns all .fmf filenames found inside it.
+///
+/// [sourceRoot] is the folder that directly contains dbc/, edt/, Inc/ (and
+/// potentially an EDITOR DATA folder). It already accounts for any wrapper
+/// sub-folder, so callers don't need to repeat that logic.
+///
+/// Returns an empty list if the EDITOR DATA folder doesn't exist or is empty.
+Future<List<String>> _detectFmfFiles(String sourceRoot) async {
+  final Directory? editorDataDir = await _findEditorDataSubDir(sourceRoot);
+  if (editorDataDir == null) return [];
+
+  try {
+    final List<FileSystemEntity> entries =
+        await editorDataDir.list(followLinks: false).toList();
+    // Return only .fmf files (case-insensitive extension check), sorted.
+    return entries
+        .whereType<File>()
+        .where((f) => p.extension(f.path).toLowerCase() == '.fmf')
+        .map((f) => p.basename(f.path))
+        .toList()
+      ..sort();
+  } catch (_) {
+    return [];
+  }
+}
+
+/// Finds a sub-directory named "EDITOR DATA" (or "editor data" — the match
+/// is case-insensitive) directly inside [sourceRoot].
+///
+/// Returns the [Directory] if found, or null if no such sub-folder exists.
+Future<Directory?> _findEditorDataSubDir(String sourceRoot) async {
+  try {
+    final Directory rootDir = Directory(sourceRoot);
+    if (!await rootDir.exists()) return null;
+
+    final List<FileSystemEntity> entries =
+        await rootDir.list(followLinks: false).toList();
+
+    for (final entity in entries) {
+      if (entity is Directory) {
+        // Compare in lowercase so "EDITOR DATA", "editor data", "Editor Data"
+        // all match correctly regardless of how the download was packaged.
+        if (p.basename(entity.path).toLowerCase() == 'editor data') {
+          return entity;
+        }
+      }
+    }
+  } catch (_) {
+    // Swallow read errors — callers treat null as "not found".
+  }
+  return null;
 }
 
 /// Inspects [fixFolderPath] and returns which of the fix folder names

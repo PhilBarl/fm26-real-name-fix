@@ -61,8 +61,11 @@ enum _DetectionStatus {
 class _FolderConfirmScreenState extends State<FolderConfirmScreen> {
   _DetectionStatus _status = _DetectionStatus.loading;
 
-  // True while a manual directory picker is open.
+  // True while a manual directory picker is open (for the db/ folder).
   bool _browsing = false;
+
+  // True while a manual directory picker is open for the editor data folder.
+  bool _browsingEditorData = false;
 
   // Controller for the "paste path" text field shown as an alternative to the
   // folder picker on macOS (where the picker cannot navigate inside .app bundles).
@@ -103,6 +106,16 @@ class _FolderConfirmScreenState extends State<FolderConfirmScreen> {
     final ResolvedPaths? resolved =
         await resolveDbFolder(widget.appState.store!);
 
+    // Also detect the editor data folder. This path is OS-dependent but
+    // store-independent, so we detect it at the same time as the db folder.
+    // resolveEditorDataFolder() returns the expected path whether or not the
+    // folder currently exists (the installer will create it if needed).
+    if (widget.appState.editorDataFolderPath == null ||
+        !widget.appState.editorDataFolderManuallySet) {
+      widget.appState.editorDataFolderPath = resolveEditorDataFolder();
+      widget.appState.editorDataFolderManuallySet = false;
+    }
+
     if (resolved != null) {
       setState(() {
         widget.appState.dbFolderPath = resolved.dbFolderPath;
@@ -117,6 +130,30 @@ class _FolderConfirmScreenState extends State<FolderConfirmScreen> {
       setState(() {
         _status = _DetectionStatus.notFound;
       });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Manual editor data folder browse
+  // ---------------------------------------------------------------------------
+
+  /// Opens a directory picker so the user can manually locate (or create) the
+  /// editor data folder.
+  Future<void> _browseForEditorDataFolder() async {
+    setState(() => _browsingEditorData = true);
+
+    try {
+      final String? chosen = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Select the FM26 "editor data" folder',
+      );
+      if (chosen == null) return; // User cancelled.
+
+      setState(() {
+        widget.appState.editorDataFolderPath = chosen;
+        widget.appState.editorDataFolderManuallySet = true;
+      });
+    } finally {
+      setState(() => _browsingEditorData = false);
     }
   }
 
@@ -462,6 +499,12 @@ class _FolderConfirmScreenState extends State<FolderConfirmScreen> {
               ),
             ),
           ),
+          const SizedBox(height: 12),
+
+          // Editor data folder card — shown below the db/ card.
+          // This is where .fmf files from the fix pack will be copied.
+          _buildEditorDataCard(colorScheme, textTheme),
+
           const SizedBox(height: 20),
 
           // Version folder selection
@@ -506,6 +549,72 @@ class _FolderConfirmScreenState extends State<FolderConfirmScreen> {
                 },
               )),
         ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Editor data folder card
+  // ---------------------------------------------------------------------------
+
+  /// A compact card showing the detected editor data folder path with a
+  /// "Change" button so the user can override it if needed.
+  ///
+  /// The editor data folder is where .fmf files from the fix pack are copied.
+  /// It may not exist yet — the installer creates it automatically if needed.
+  Widget _buildEditorDataCard(ColorScheme colorScheme, TextTheme textTheme) {
+    final String? path = widget.appState.editorDataFolderPath;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.sports_soccer, color: colorScheme.secondary, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  'Editor data folder',
+                  style: textTheme.titleSmall?.copyWith(
+                    color: colorScheme.secondary,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '.fmf files from the fix pack will be copied here.',
+              style: textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              path ?? 'Could not detect — please set manually.',
+              style: textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                color: path != null
+                    ? colorScheme.onSurfaceVariant
+                    : colorScheme.error,
+              ),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: _browsingEditorData ? null : _browseForEditorDataFolder,
+              icon: _browsingEditorData
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.drive_folder_upload, size: 18),
+              label: const Text('Change folder'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -590,6 +699,8 @@ class _FolderConfirmScreenState extends State<FolderConfirmScreen> {
             onPressed: _autoDetect,
             child: const Text('Try auto-detection again'),
           ),
+          const SizedBox(height: 16),
+          _buildEditorDataCard(colorScheme, textTheme),
           const SizedBox(height: 8),
         ],
       ),

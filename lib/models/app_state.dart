@@ -78,6 +78,15 @@ class AppState {
   // or auto-detected by the app (false). Used for display purposes.
   bool dbFolderManuallySet = false;
 
+  // The path to the FM26 "editor data" folder where .fmf files must be placed.
+  // This is OS-dependent but store-independent (always in the user's documents
+  // or application support area). Null until detection has run.
+  String? editorDataFolderPath;
+
+  // Whether editorDataFolderPath was set manually by the user (true)
+  // or derived automatically from the OS (false).
+  bool editorDataFolderManuallySet = false;
+
   // All version sub-folders found inside dbFolderPath.
   // Each entry is a full path, e.g. "/path/to/db/2600".
   // This list may contain multiple entries when the user has several FM

@@ -63,6 +63,8 @@ class _ApplyScreenState extends State<ApplyScreen> {
       fixFolderPath: widget.appState.fixFolderPath!,
       // Convert the Set to a List so applyFix can iterate in order.
       targetFolders: widget.appState.selectedVersionFolders.toList(),
+      // Pass the editor data folder path so .fmf files can be copied there.
+      editorDataFolderPath: widget.appState.editorDataFolderPath,
       onProgress: (FixProgress progress) {
         // setState() triggers a UI rebuild so the new log line appears immediately.
         setState(() {
